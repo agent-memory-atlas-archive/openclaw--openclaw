@@ -18,6 +18,7 @@ import {
   type ApplicationContextProvider,
 } from "../../test-helpers/application-context.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
+import type { InstallWizardController } from "./install-wizard-controller.ts";
 import type { PluginInstallWizardState } from "./install-wizard-model.ts";
 import type { PluginRowMessage } from "./plugin-row-message.ts";
 import type { PluginsConsentController } from "./plugins-consent-controller.ts";
@@ -51,12 +52,7 @@ type TestPluginsPage = HTMLElement & {
   applyMutationResult: (result: PluginMutationResult) => void;
   consentController: Pick<PluginsConsentController, "install">;
   installWizard: PluginInstallWizardState | null;
-  openInstallWizard: (
-    result: import("../../lib/plugins/index.ts").PluginDiscoveryDetailResult,
-  ) => void;
-  closeInstallWizard: () => void;
-  patchInstallWizardConfig: (path: Array<string | number>, value: unknown) => void;
-  saveInstallWizardConfiguration: () => Promise<void>;
+  installWizardController: InstallWizardController;
   refreshCatalog: () => Promise<void>;
   updateEnabled: (pluginId: string, enabled: boolean, key?: string) => Promise<void>;
   uninstall: (pluginId: string, rowKey: string) => Promise<void>;
@@ -330,12 +326,13 @@ export function createContext(
 export async function mountPage(
   context: ApplicationContext,
   routeData?: PluginsRouteData,
+  surface: TestPluginsPage["surface"] = routeData?.location.pathname.includes("/settings/plugins")
+    ? "settings"
+    : "discovery",
 ): Promise<{ page: TestPluginsPage; provider: ApplicationContextProvider }> {
   const provider = createApplicationContextProvider(context);
   const page = document.createElement("openclaw-plugins-page") as unknown as TestPluginsPage;
-  page.surface = routeData?.location.pathname.includes("/settings/plugins")
-    ? "settings"
-    : "discovery";
+  page.surface = surface;
   page.routeData = routeData;
   provider.append(page);
   document.body.append(provider);
