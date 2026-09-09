@@ -17,20 +17,20 @@ type InstallWizardControllerHost = {
   getCatalog: () => PluginListResult | null;
   getRuntimeConfig: () => ApplicationContext["runtimeConfig"];
   getConsentController: () => PluginsConsentController;
-  captureOwner: () => object;
-  isOwnerCurrent: (owner: object) => boolean;
+  getOwner: () => object;
   isConnected: () => boolean;
   canMutate: () => boolean;
   canEditConfig: () => boolean;
   refreshCatalog: () => Promise<void>;
+  requestRestart: (reason: string) => Promise<void>;
   requestUpdate: () => void;
   onManage: (pluginId: string) => void;
 };
 
 export class InstallWizardController {
   private reconnectTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
-  private owner: object | null = null;
   private attempt = 0;
+  private owner: object | null = null;
 
   constructor(private readonly host: InstallWizardControllerHost) {}
 
@@ -41,6 +41,7 @@ export class InstallWizardController {
 
   disconnect(): void {
     this.clearReconnectTimeout();
+    this.retireAttempt();
   }
 
   invalidate(): void {
@@ -48,22 +49,18 @@ export class InstallWizardController {
     if (!state) {
       return;
     }
-    if (!this.owner || !this.host.isOwnerCurrent(this.owner)) {
-      const key = this.key(state);
-      if (key) {
-        this.host.getConsentController().cancelMutationObserver(key);
-      }
-      this.attempt += 1;
-      this.owner = null;
-      this.clearReconnectTimeout();
+    if (!this.ownerIsCurrent()) {
+      this.retireAttempt();
       this.host.setState({
         ...state,
         stage: "error",
         error: t("pluginsPage.installWizard.destinationChanged"),
       });
-    } else if (this.busy) {
+      return;
+    }
+    if (this.busy) {
       this.host.setState({ ...state, stage: "reconnecting", error: undefined });
-      this.armReconnectTimeout(state.catalogId);
+      this.armReconnectTimeout(this.attempt, state.catalogId);
     }
   }
 
@@ -74,7 +71,7 @@ export class InstallWizardController {
     }
     this.clearReconnectTimeout();
     this.attempt += 1;
-    this.owner = this.host.captureOwner();
+    this.owner = this.host.getOwner();
     this.host.setState({
       catalogId: result.plugin.id,
       detail: result,
@@ -92,8 +89,7 @@ export class InstallWizardController {
     if (key) {
       this.host.getConsentController().cancelMutationObserver(key);
     }
-    this.attempt += 1;
-    this.owner = null;
+    this.retireAttempt();
     this.host.setState(null);
   }
 
@@ -121,7 +117,7 @@ export class InstallWizardController {
     this.host.setState({ ...state, stage: "installing", error: undefined });
     void this.host.getConsentController().install(state.request, key, {
       reviewConfirmed: true,
-      onCommitted: (result) => {
+      onCommitted: async (result) => {
         const current = this.host.getState();
         if (!current || !this.isCurrent(attempt, state.catalogId)) {
           return;
@@ -134,7 +130,7 @@ export class InstallWizardController {
           error: undefined,
         });
         if (result.restartRequired) {
-          this.armReconnectTimeout(state.catalogId);
+          await this.restart(attempt, state.catalogId);
         } else {
           void this.resume();
         }
@@ -176,6 +172,14 @@ export class InstallWizardController {
     const plugin = this.installedPlugin(state);
     if (!plugin) {
       this.fail(attempt, state.catalogId, t("pluginsPage.installWizard.installedStateMissing"));
+      return;
+    }
+    if (plugin.state === "error") {
+      this.fail(
+        attempt,
+        state.catalogId,
+        plugin.error ?? t("pluginsPage.installWizard.pluginUnhealthy"),
+      );
       return;
     }
     const stage = installedPluginWizardStage(plugin);
@@ -243,9 +247,20 @@ export class InstallWizardController {
     if (!state) {
       return;
     }
+    if (!this.ownerIsCurrent()) {
+      this.attempt += 1;
+      this.owner = this.host.getOwner();
+      this.host.setState({
+        ...state,
+        pluginId: undefined,
+        stage: "review",
+        error: undefined,
+      });
+      return;
+    }
     if (state.pluginId) {
       this.host.setState({ ...state, stage: "reconnecting", error: undefined });
-      this.armReconnectTimeout(state.catalogId);
+      this.armReconnectTimeout(this.attempt, state.catalogId);
       void this.host.refreshCatalog().then(() => this.resume());
       return;
     }
@@ -272,20 +287,24 @@ export class InstallWizardController {
     }
   }
 
-  private armReconnectTimeout(catalogId: string): void {
+  private armReconnectTimeout(attempt: number, catalogId: string): void {
     this.clearReconnectTimeout();
     this.reconnectTimer = globalThis.setTimeout(() => {
       this.reconnectTimer = null;
       const state = this.host.getState();
-      if (state?.catalogId === catalogId && state.stage === "reconnecting") {
-        this.fail(this.attempt, catalogId, t("pluginsPage.installWizard.reconnectTimedOut"));
+      if (
+        state?.catalogId === catalogId &&
+        state.stage === "reconnecting" &&
+        this.isCurrent(attempt, catalogId)
+      ) {
+        this.fail(attempt, catalogId, t("pluginsPage.installWizard.reconnectTimedOut"));
       }
     }, INSTALL_RECONNECT_TIMEOUT_MS);
   }
 
   private fail(attempt: number, catalogId: string, error: string): void {
     const state = this.host.getState();
-    if (state && this.isCurrent(attempt, catalogId)) {
+    if (state?.catalogId === catalogId && this.isCurrent(attempt, catalogId)) {
       this.clearReconnectTimeout();
       this.host.setState({ ...state, stage: "error", error });
     }
@@ -326,13 +345,21 @@ export class InstallWizardController {
           if (!current || !this.isCurrent(attempt, state.catalogId)) {
             return;
           }
+          if (result.plugin.state === "error") {
+            this.fail(
+              attempt,
+              state.catalogId,
+              result.plugin.error ?? t("pluginsPage.installWizard.pluginUnhealthy"),
+            );
+            return;
+          }
           this.host.setState({
             ...current,
             pluginId: result.plugin.id,
             stage: result.restartRequired ? "reconnecting" : "success",
           });
           if (result.restartRequired) {
-            this.armReconnectTimeout(state.catalogId);
+            void this.restart(attempt, state.catalogId);
           } else {
             this.clearReconnectTimeout();
           }
@@ -342,13 +369,39 @@ export class InstallWizardController {
     );
   }
 
+  private ownerIsCurrent(): boolean {
+    return this.owner !== null && this.owner === this.host.getOwner();
+  }
+
   private isCurrent(attempt: number, catalogId: string): boolean {
-    const state = this.host.getState();
     return (
       attempt === this.attempt &&
-      state?.catalogId === catalogId &&
-      this.owner !== null &&
-      this.host.isOwnerCurrent(this.owner)
+      this.ownerIsCurrent() &&
+      this.host.getState()?.catalogId === catalogId
     );
+  }
+
+  private retireAttempt(): void {
+    this.attempt += 1;
+    this.owner = null;
+  }
+
+  private async restart(attempt: number, catalogId: string): Promise<void> {
+    if (!this.isCurrent(attempt, catalogId)) {
+      return;
+    }
+    try {
+      await this.host.requestRestart(t("pluginsPage.installWizard.restartReason"));
+    } catch (error) {
+      this.fail(
+        attempt,
+        catalogId,
+        error instanceof Error ? error.message : t("pluginsPage.installWizard.restartFailed"),
+      );
+      return;
+    }
+    if (this.isCurrent(attempt, catalogId)) {
+      this.armReconnectTimeout(attempt, catalogId);
+    }
   }
 }

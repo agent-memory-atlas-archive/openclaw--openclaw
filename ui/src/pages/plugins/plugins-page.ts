@@ -170,12 +170,18 @@ class PluginsPage extends OpenClawLightDomElement {
     getCatalog: () => this.result,
     getRuntimeConfig: () => this.context.runtimeConfig,
     getConsentController: () => this.consentController,
-    captureOwner: () => gatewayPresentationScope(this.context.gateway),
-    isOwnerCurrent: (owner) => gatewayPresentationScope(this.context.gateway) === owner,
+    getOwner: () => gatewayPresentationScope(this.context.gateway),
     isConnected: () => this.gateway.connected,
     canMutate: () => this.canMutate(),
     canEditConfig: () => this.canEditConfig(),
     refreshCatalog: () => this.refreshCatalog(),
+    requestRestart: async (reason) => {
+      const scope = this.gateway.capture();
+      if (!scope) {
+        throw new Error(t("pluginsPage.installWizard.restartFailed"));
+      }
+      await scope.client.request("gateway.restart.request", { reason });
+    },
     requestUpdate: () => this.requestUpdate(),
     onManage: (pluginId) => {
       this.context.navigate("plugin-settings", {
@@ -218,10 +224,6 @@ class PluginsPage extends OpenClawLightDomElement {
         const completedSave = this.configAutoSaveStatus === "saving" && nextStatus === "saved";
         this.configAutoSaveStatus = nextStatus;
         this.requestUpdate();
-        if (this.installWizard?.stage === "configuring" && runtimeConfig.state.connected) {
-          void runtimeConfig.ensureLoaded();
-          void runtimeConfig.ensureSchemaLoaded();
-        }
         if (completedSave && this.pluginConfigEditPending) {
           this.pluginConfigEditPending = false;
           void this.refreshCatalog();
@@ -687,6 +689,10 @@ class PluginsPage extends OpenClawLightDomElement {
         reloadConfig: () => {
           this.pluginConfigEditPending = false;
           void this.context.runtimeConfig.refresh({ discardPendingChanges: true });
+        },
+        retryConfig: () => {
+          void this.context.runtimeConfig.retry();
+          void this.context.runtimeConfig.refreshSchema();
         },
         closeSettingsDetail: (parentRoute) => {
           this.detail = null;

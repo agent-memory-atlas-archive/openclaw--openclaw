@@ -360,6 +360,16 @@ describeControlUiE2e("Control UI Plugins mocked Gateway E2E", () => {
 
       const installRequest = await gateway.waitForRequest("plugins.install");
       expect(installRequest.params).toEqual({ source: "clawhub", packageName: "matrix" });
+      expect((await gateway.waitForRequest("gateway.restart.request")).params).toEqual({
+        reason: "Apply an installed plugin change",
+      });
+      const cancel = await wizard.evaluate((element) => {
+        const event = new CustomEvent("modal-cancel", { cancelable: true });
+        element.dispatchEvent(event);
+        return event.defaultPrevented;
+      });
+      expect(cancel).toBe(true);
+      expect(await wizard.count()).toBe(1);
       await gateway.setOnline(false);
       await gateway.setOnline(true);
 
@@ -374,6 +384,9 @@ describeControlUiE2e("Control UI Plugins mocked Gateway E2E", () => {
       await wizard.getByRole("button", { name: "Save and enable", exact: true }).click();
 
       await gateway.waitForRequest("plugins.setEnabled");
+      await expect
+        .poll(async () => (await gateway.getRequests("gateway.restart.request")).length)
+        .toBe(2);
       await gateway.setOnline(false);
       await gateway.setOnline(true);
       await wizard.getByText("Plugin ready", { exact: true }).waitFor();
