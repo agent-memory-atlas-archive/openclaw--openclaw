@@ -2,7 +2,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
   captureScreenshot,
-  desktopViewport,
   describeControlUiE2e,
   discoveryResult,
   initialInventory,
